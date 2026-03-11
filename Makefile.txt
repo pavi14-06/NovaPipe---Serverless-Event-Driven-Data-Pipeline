@@ -1,0 +1,70 @@
+# ============================================================
+# NovaPipe — Makefile
+# ============================================================
+
+.PHONY: help setup deploy teardown test lint health scale clean
+
+PIPELINE_ENV ?= production
+AWS_REGION   ?= us-east-1
+
+help: ## Show this help
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
+		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
+
+setup: ## Start local dev environment (Docker + Kafka + Cassandra)
+	@chmod +x scripts/setup_local.sh && ./scripts/setup_local.sh
+
+deploy: ## Deploy full pipeline to AWS
+	@chmod +x scripts/deploy.sh && ./scripts/deploy.sh --env $(PIPELINE_ENV)
+
+teardown: ## Destroy all AWS infrastructure
+	@chmod +x scripts/teardown.sh && ./scripts/teardown.sh --env $(PIPELINE_ENV)
+
+test: ## Run unit tests
+	@python3 -m pytest tests/ -v --tb=short
+
+test-cov: ## Run tests with coverage report
+	@python3 -m pytest tests/ -v --cov=lambda_ --cov-report=term-missing
+
+lint: ## Lint Python code
+	@python3 -m flake8 lambda/ cassandra/ kafka/ s3/ tests/ \
+		--max-line-length=100 \
+		--ignore=E501,W503
+
+health: ## Run pipeline health checks
+	@chmod +x scripts/health_check.sh && ./scripts/health_check.sh --env $(PIPELINE_ENV)
+
+scale: ## Scale Lambda functions (CONCURRENCY=50 make scale)
+	@chmod +x scripts/scale.sh && ./scripts/scale.sh \
+		--concurrency $(CONCURRENCY) \
+		--env $(PIPELINE_ENV)
+
+topics: ## Create/update Kafka topics
+	@python3 kafka/topics.py create
+
+schema: ## Apply Cassandra schema
+	@docker exec -i novapipe-cassandra cqlsh < cassandra/schema.cql
+
+clean: ## Remove build artifacts
+	@find lambda/ -name "*.zip" -delete
+	@find lambda/ -name "package" -type d -exec rm -rf {} + 2>/dev/null || true
+	@find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+	@find . -name "*.pyc" -delete 2>/dev/null || true
+	@echo "✅ Clean complete"
+
+logs-producer: ## Tail producer Lambda logs
+	@aws logs tail /aws/lambda/novapipe-producer-$(PIPELINE_ENV) \
+		--region $(AWS_REGION) --follow
+
+logs-consumer: ## Tail consumer Lambda logs
+	@aws logs tail /aws/lambda/novapipe-consumer-$(PIPELINE_ENV) \
+		--region $(AWS_REGION) --follow
+
+docker-up: ## Start Docker services only
+	@docker compose -f docker/docker-compose.yml up -d
+
+docker-down: ## Stop Docker services
+	@docker compose -f docker/docker-compose.yml down
+
+docker-reset: ## Full Docker reset (data loss!)
+	@docker compose -f docker/docker-compose.yml down -v
