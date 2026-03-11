@@ -1,0 +1,79 @@
+variable "aws_region" {
+  description = "AWS region to deploy into"
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "pipeline_env" {
+  description = "Pipeline environment (production, staging, development)"
+  type        = string
+  default     = "production"
+
+  validation {
+    condition     = contains(["production", "staging", "development"], var.pipeline_env)
+    error_message = "pipeline_env must be one of: production, staging, development"
+  }
+}
+
+variable "producer_zip" {
+  description = "Path to producer Lambda zip package"
+  type        = string
+}
+
+variable "consumer_zip" {
+  description = "Path to consumer Lambda zip package"
+  type        = string
+}
+
+variable "transformer_zip" {
+  description = "Path to transformer Lambda zip package"
+  type        = string
+}
+
+variable "lambda_memory_mb" {
+  description = "Lambda memory allocation in MB"
+  type        = number
+  default     = 512
+}
+
+variable "lambda_timeout_sec" {
+  description = "Lambda function timeout in seconds"
+  type        = number
+  default     = 300
+}
+
+variable "kafka_instance_type" {
+  description = "MSK broker instance type"
+  type        = string
+  default     = "kafka.m5.large"
+}
+
+variable "kafka_broker_count" {
+  description = "Number of MSK broker nodes (must be multiple of AZ count)"
+  type        = number
+  default     = 3
+}
+
+variable "kafka_volume_gb" {
+  description = "EBS volume size per Kafka broker in GB"
+  type        = number
+  default     = 100
+}
+
+variable "s3_lifecycle_cold_days" {
+  description = "Days before transitioning S3 objects to Glacier"
+  type        = number
+  default     = 90
+}
+
+variable "dlq_retention_seconds" {
+  description = "SQS DLQ message retention period in seconds"
+  type        = number
+  default     = 1209600   # 14 days
+}
+
+variable "alert_email" {
+  description = "Email address for CloudWatch alarm notifications"
+  type        = string
+  default     = ""
+}
