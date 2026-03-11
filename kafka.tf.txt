@@ -1,0 +1,88 @@
+# ============================================================
+# NovaPipe — AWS MSK (Managed Kafka) Cluster (Terraform)
+# ============================================================
+
+resource "aws_msk_configuration" "novapipe" {
+  name              = "novapipe-${var.pipeline_env}"
+  kafka_versions    = ["3.5.1"]
+  description       = "NovaPipe Kafka broker configuration"
+
+  server_properties = <<-PROPS
+    auto.create.topics.enable=false
+    default.replication.factor=3
+    min.insync.replicas=2
+    num.io.threads=8
+    num.network.threads=5
+    num.partitions=6
+    num.replica.fetchers=2
+    replica.lag.time.max.ms=30000
+    socket.receive.buffer.bytes=102400
+    socket.request.max.bytes=104857600
+    socket.send.buffer.bytes=102400
+    unclean.leader.election.enable=false
+    zookeeper.session.timeout.ms=18000
+    log.retention.hours=168
+    log.segment.bytes=1073741824
+    compression.type=gzip
+    message.max.bytes=1048576
+  PROPS
+}
+
+resource "aws_msk_cluster" "novapipe" {
+  cluster_name           = "novapipe-${var.pipeline_env}"
+  kafka_version          = "3.5.1"
+  number_of_broker_nodes = var.kafka_broker_count
+
+  broker_node_group_info {
+    instance_type   = var.kafka_instance_type
+    client_subnets  = aws_subnet.private[*].id
+    security_groups = [aws_security_group.msk.id]
+
+    storage_info {
+      ebs_storage_info {
+        volume_size = var.kafka_volume_gb
+        provisioned_throughput {
+          enabled           = true
+          volume_throughput = 250
+        }
+      }
+    }
+  }
+
+  configuration_info {
+    arn      = aws_msk_configuration.novapipe.arn
+    revision = aws_msk_configuration.novapipe.latest_revision
+  }
+
+  client_authentication {
+    sasl {
+      scram = true
+    }
+    tls {}
+  }
+
+  encryption_info {
+    encryption_in_transit {
+      client_broker = "TLS"
+      in_cluster    = true
+    }
+  }
+
+  open_monitoring {
+    prometheus {
+      jmx_exporter  { enabled_in_broker = true }
+      node_exporter { enabled_in_broker = true }
+    }
+  }
+
+  logging_info {
+    broker_logs {
+      cloudwatch_logs {
+        enabled   = true
+        log_group = "/aws/msk/novapipe-${var.pipeline_env}"
+      }
+    }
+  }
+
+  tags = { Component = "streaming" }
+}

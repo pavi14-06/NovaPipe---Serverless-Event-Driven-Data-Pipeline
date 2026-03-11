@@ -1,0 +1,171 @@
+version: "3.9"
+
+# ============================================================
+# NovaPipe — Local Development Environment
+# Provides: Kafka + Zookeeper + Cassandra + LocalStack (AWS)
+# Usage: ./scripts/setup_local.sh  OR  docker compose up -d
+# ============================================================
+
+networks:
+  novapipe-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  zookeeper-data:
+  zookeeper-logs:
+  kafka-data:
+  cassandra-data:
+  localstack-data:
+
+services:
+
+  # ─── Zookeeper ──────────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: novapipe-zookeeper
+    restart: unless-stopped
+    networks:
+      - novapipe-net
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_SYNC_LIMIT: 2
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Kafka Broker ───────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: novapipe-kafka
+    restart: unless-stopped
+    networks:
+      - novapipe-net
+    ports:
+      - "9092:9092"
+      - "9093:9093"   # Internal listener
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: >
+        PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: >
+        PLAINTEXT://kafka:9093,PLAINTEXT_HOST://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 168         # 7 days
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824    # 1 GB
+      KAFKA_NUM_PARTITIONS: 6
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ─── Kafka UI ───────────────────────────────────────────────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: novapipe-kafka-ui
+    restart: unless-stopped
+    networks:
+      - novapipe-net
+    ports:
+      - "8080:8080"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: novapipe-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9093
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+
+  # ─── Cassandra ──────────────────────────────────────────────
+  cassandra:
+    image: cassandra:4.1
+    container_name: novapipe-cassandra
+    restart: unless-stopped
+    networks:
+      - novapipe-net
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+      - ./cassandra/schema.cql:/docker-entrypoint-initdb.d/schema.cql:ro
+    environment:
+      CASSANDRA_CLUSTER_NAME: "NovaPipe Local"
+      CASSANDRA_DC: us-east-1
+      CASSANDRA_RACK: rack1
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      MAX_HEAP_SIZE: "512M"
+      HEAP_NEWSIZE: "128M"
+    healthcheck:
+      test: ["CMD", "cqlsh", "-e", "describe keyspaces"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 60s
+
+  # ─── LocalStack (AWS Emulation) ─────────────────────────────
+  localstack:
+    image: localstack/localstack:3.0
+    container_name: novapipe-localstack
+    restart: unless-stopped
+    networks:
+      - novapipe-net
+    ports:
+      - "4566:4566"   # Unified endpoint (Lambda, S3, SQS, etc.)
+    volumes:
+      - localstack-data:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      SERVICES: lambda,s3,sqs,secretsmanager,cloudwatch,iam,logs
+      DEBUG: 0
+      LAMBDA_EXECUTOR: docker
+      LAMBDA_DOCKER_NETWORK: novapipe-net
+      AWS_DEFAULT_REGION: us-east-1
+      PERSISTENCE: 1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  # ─── Schema Init Job ────────────────────────────────────────
+  cassandra-init:
+    image: cassandra:4.1
+    container_name: novapipe-cassandra-init
+    networks:
+      - novapipe-net
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    volumes:
+      - ./cassandra/schema.cql:/schema.cql:ro
+    command: >
+      bash -c "
+        echo 'Applying Cassandra schema...' &&
+        cqlsh cassandra 9042 -f /schema.cql &&
+        echo '✅ Schema applied successfully'
+      "
+    restart: "no"

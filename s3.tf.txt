@@ -1,0 +1,98 @@
+# ============================================================
+# NovaPipe — S3 Data Lake + SQS Dead Letter Queue (Terraform)
+# ============================================================
+
+# ─── S3 Data Lake ─────────────────────────────────────────────────────────────
+
+resource "aws_s3_bucket" "data_lake" {
+  bucket        = "novapipe-data-lake-${var.pipeline_env}-${local.suffix}"
+  force_destroy = var.pipeline_env != "production"
+}
+
+resource "aws_s3_bucket_versioning" "data_lake" {
+  bucket = aws_s3_bucket.data_lake.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "data_lake" {
+  bucket = aws_s3_bucket.data_lake.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "data_lake" {
+  bucket                  = aws_s3_bucket.data_lake.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "data_lake" {
+  bucket = aws_s3_bucket.data_lake.id
+
+  rule {
+    id     = "archive-cold-data"
+    status = "Enabled"
+
+    filter { prefix = "events/" }
+
+    transition {
+      days          = var.s3_lifecycle_cold_days
+      storage_class = "GLACIER"
+    }
+
+    expiration {
+      days = 365
+    }
+  }
+
+  rule {
+    id     = "cleanup-manifests"
+    status = "Enabled"
+    filter { prefix = "manifests/" }
+    expiration { days = 30 }
+  }
+}
+
+# ─── SQS Dead Letter Queue ────────────────────────────────────────────────────
+
+resource "aws_sqs_queue" "dlq" {
+  name                       = "novapipe-dlq-${var.pipeline_env}"
+  message_retention_seconds  = var.dlq_retention_seconds
+  visibility_timeout_seconds = 300
+  receive_wait_time_seconds  = 20   # Long polling
+
+  redrive_allow_policy = jsonencode({
+    redrivePermission = "allowAll"
+  })
+
+  tags = { Purpose = "dead-letter-queue" }
+}
+
+resource "aws_sqs_queue_policy" "dlq" {
+  queue_url = aws_sqs_queue.dlq.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "LambdaCanSendToDLQ"
+        Effect = "Allow"
+        Principal = { Service = "lambda.amazonaws.com" }
+        Action   = "sqs:SendMessage"
+        Resource = aws_sqs_queue.dlq.arn
+        Condition = {
+          ArnLike = {
+            "aws:SourceArn" = "arn:aws:lambda:${local.region}:${local.account_id}:function:novapipe-*"
+          }
+        }
+      }
+    ]
+  })
+}
