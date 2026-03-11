@@ -228,4 +228,5 @@ MIT License — feel free to use this in your own projects!
 
 ---
 
-<p align="center">Built with ❤️ using Python, Bash, AWS Lambda, Kafka & Cassandra</p>
+<p align="center">Author: Pavithra V
+  Built with ❤️ using Python, Bash, AWS Lambda, Kafka & Cassandra</p>
